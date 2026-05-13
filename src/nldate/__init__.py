@@ -3,7 +3,7 @@ from datetime import date
 from dateutil.relativedelta import relativedelta
 from dateutil import parser as dt_parser
 
-# Added 'a', 'an' and expanded numbers
+# Expanded dictionary to catch common words
 WORD_TO_NUM = {
     "a": 1,
     "an": 1,
@@ -19,6 +19,9 @@ WORD_TO_NUM = {
     "ten": 10,
     "eleven": 11,
     "twelve": 12,
+    "dozen": 12,
+    "couple": 2,
+    "few": 3,
 }
 
 
@@ -31,8 +34,13 @@ def parse(s: str, today: date | None = None) -> date:
 
     s = s.lower().strip()
 
+    # 0. Clean up tricky multi-word idioms manually before regex
+    s = s.replace("the day after tomorrow", "in 2 days")
+    s = s.replace("the day before yesterday", "2 days ago")
+    s = s.replace("a couple of", "2")
+    s = s.replace("a few", "3")
+
     # 1. Complex relative offsets: "X before/after/from Y"
-    # Using \b to ensure word boundaries
     match = re.search(r"(.+?)\s+\b(before|after|from)\b\s+(.+)", s)
     if match:
         delta_str, direction, base_str = match.groups()
@@ -67,9 +75,9 @@ def _parse_base(s: str, today: date) -> date:
         return today - relativedelta(days=1)
 
     # Handle "next/last week/month/year"
-    if match := re.match(r"(next|last)\s+(week|month|year)", s):
+    if match := re.match(r"(next|last|this)\s+(week|month|year)", s):
         direction, unit = match.groups()
-        sign = 1 if direction == "next" else -1
+        sign = 1 if direction in ("next", "this") else -1
 
         if unit == "week":
             return today + relativedelta(weeks=sign)
@@ -78,8 +86,8 @@ def _parse_base(s: str, today: date) -> date:
         elif unit == "year":
             return today + relativedelta(years=sign)
 
-    # Handle "next/last <weekday>"
-    if match := re.match(r"(next|last)\s+([a-z]+)", s):
+    # Handle "next/last/this <weekday>"
+    if match := re.match(r"(next|last|this)\s+([a-z]+)", s):
         direction, day_name = match.groups()
         weekdays = {
             "monday": 0,
@@ -98,9 +106,12 @@ def _parse_base(s: str, today: date) -> date:
             if direction == "next":
                 if days_diff <= 0:
                     days_diff += 7
-            else:  # last
+            elif direction == "last":
                 if days_diff >= 0:
                     days_diff -= 7
+            elif direction == "this":  # "this Tuesday" means the upcoming Tuesday
+                if days_diff < 0:
+                    days_diff += 7
 
             return today + relativedelta(days=days_diff)
 
@@ -115,15 +126,15 @@ def _parse_delta(s: str) -> relativedelta:
     """Helper to extract a time delta from strings like '1 year and 2 months'"""
     deltas = {"days": 0, "weeks": 0, "months": 0, "years": 0}
 
-    # Use re.sub with \b to only replace whole words (so 'a' doesn't ruin 'day')
     for word, num in WORD_TO_NUM.items():
         s = re.sub(r"\b" + word + r"\b", str(num), s)
 
-    # Find all occurrences of "number unit", ignoring pluralization
-    matches = re.findall(r"(\d+)\s+(day|week|month|year)s?", s)
+    # Find optional number and unit. If no number is found (e.g. "the day"), default to 1.
+    matches = re.findall(r"\b(\d+)?\s*(day|week|month|year)s?\b", s)
 
     for val, unit in matches:
-        deltas[unit + "s"] += int(val)
+        num = int(val) if val else 1
+        deltas[unit + "s"] += num
 
     return relativedelta(
         days=deltas["days"],
